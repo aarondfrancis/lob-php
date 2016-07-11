@@ -12,10 +12,8 @@
 namespace Lob;
 
 use Exception;
-use Guzzle\Common\Exception\GuzzleException;
-use Guzzle\Http\Exception\CurlException;
-use Guzzle\Http\Client as HttpClient;
-use Guzzle\Http\Message\EntityEnclosingRequestInterface;
+use GuzzleHttp\Client as HttpClient;
+use GuzzleHttp\Psr7\Request;
 use Lob\Exception\AuthorizationException;
 use Lob\Exception\InternalErrorException;
 use Lob\Exception\NetworkErrorException;
@@ -27,9 +25,11 @@ use Lob\Exception\RateLimitException;
 abstract class Resource implements ResourceInterface
 {
     protected $lob;
+    private $client;
 
     public function __construct(Lob $lob)
     {
+        $this->client = null;
         $this->lob = $lob;
     }
 
@@ -47,7 +47,7 @@ abstract class Resource implements ResourceInterface
             return $all;
         }
 
-        return $all['data'];
+        return $all->data;
     }
 
     public function create(array $data)
@@ -93,65 +93,67 @@ abstract class Resource implements ResourceInterface
         return array_pop($class);
     }
 
-    protected function sendRequest($method, $version, $clientVersion, $path,
-        array $query, array $body = null)
+    protected function sendRequest($method, $version, $clientVersion, $path, array $query, array $body = null)
     {
-        $request = $this->prepareRequest($method, $version, $clientVersion,
-          $path, $query, $body);
+        $request = $this->prepareRequest($method, $version, $clientVersion, $path, $query, $body);
 
         try {
-            $response = $request->send();
+            $response = $this->client->send($request);
             //@codeCoverageIgnoreStart
             // There is no way to induce this error intentionally.
-        } catch (CurlException $e) {
-            throw new NetworkErrorException($e->getMessage());
-            //@codeCoverageIgnoreEnd
-        } catch (GuzzleException $e) {
-            $responseErrorBody = strval($e->getResponse()->getBody());
-            $errorMessage = $this->errorMessageFromJsonBody($responseErrorBody);
-            $statusCode = $e->getResponse()->getStatusCode();
-
-            if ($statusCode === 401)
-                throw new AuthorizationException('Unauthorized', 401);
-
-            if ($method == 'GET' && ($statusCode === 404 || $statusCode === 422))
-                throw new ResourceNotFoundException($errorMessage, 404);
-
-            if ($method == 'POST' && $statusCode === 404)
-                throw new ResourceNotFoundException($errorMessage, 404);
-
-            if ($statusCode === 422)
-                throw new ValidationException($errorMessage, 422);
-
-            // @codeCoverageIgnoreStart
-            // must induce serverside error to test this, so not testable
-            if ($statusCode === 429)
-                throw new RateLimitException($errorMessage, 429);
-            // @codeCoverageIgnoreEnd
-
-            // @codeCoverageIgnoreStart
-            // must induce serverside error to test this, so not testable
-            if ($statusCode === 500)
-                throw new InternalErrorException($errorMessage, 500);
-            // @codeCoverageIgnoreEnd
-
-            // @codeCoverageIgnoreStart
-            // not possible to test this code because we don't return other status codes
-            throw new UnexpectedErrorException('An Unexpected Error has occurred.');
+        // } catch (CurlException $e) {
+        //     echo $e;
+        //     throw new NetworkErrorException($e->getMessage());
+        //     //@codeCoverageIgnoreEnd
+        // } catch (GuzzleException $e) {
+        //     echo $e;
+        //     $responseErrorBody = strval($e->getResponse()->getBody());
+        //     $errorMessage = $this->errorMessageFromJsonBody($responseErrorBody);
+        //     $statusCode = $e->getResponse()->getStatusCode();
+        //
+        //     if ($statusCode === 401)
+        //         throw new AuthorizationException('Unauthorized', 401);
+        //
+        //     if ($method == 'GET' && ($statusCode === 404 || $statusCode === 422))
+        //         throw new ResourceNotFoundException($errorMessage, 404);
+        //
+        //     if ($method == 'POST' && $statusCode === 404)
+        //         throw new ResourceNotFoundException($errorMessage, 404);
+        //
+        //     if ($statusCode === 422)
+        //         throw new ValidationException($errorMessage, 422);
+        //
+        //     // @codeCoverageIgnoreStart
+        //     // must induce serverside error to test this, so not testable
+        //     if ($statusCode === 429)
+        //         throw new RateLimitException($errorMessage, 429);
+        //     // @codeCoverageIgnoreEnd
+        //
+        //     // @codeCoverageIgnoreStart
+        //     // must induce serverside error to test this, so not testable
+        //     if ($statusCode === 500)
+        //         throw new InternalErrorException($errorMessage, 500);
+        //     // @codeCoverageIgnoreEnd
+        //
+        //     // @codeCoverageIgnoreStart
+        //     // not possible to test this code because we don't return other status codes
+        //     throw new UnexpectedErrorException('An Unexpected Error has occurred.');
         } catch (Exception $e) {
+            echo $e;
             throw new UnexpectedErrorException('An Unexpected Error has occurred.');
         }
             // @codeCoverageIgnoreEnd
 
-        return $response->json();
+        return json_decode($response->getBody());
     }
 
-    protected function prepareRequest($method, $version, $clientVersion, $path, array $query,
-        array $body = null)
+    protected function prepareRequest($method, $version, $clientVersion, $path, array $query, array $body = null)
     {
         $path = '/v1/'.$path;
+        $credentials = base64_encode($this->lob->getApiKey() . ':');
         $headers = array(
             'Accept' => 'application/json; charset=utf-8',
+            'Authorization' => ['Basic '.$credentials],
             'User-Agent' => 'Lob/v1 PhpBindings/' . $clientVersion,
         );
 
@@ -164,29 +166,29 @@ abstract class Resource implements ResourceInterface
             $queryString = '?'.http_build_query($query);
         }
 
-        $client = new HttpClient('https://api.lob.com');
+        $this->client = new HttpClient(['base_uri' => 'https://api.lob.com']);
 
-        foreach ($body as $key => $value) {
-          if ($value === FALSE) {
-            $body[$key] = 'false';
-          }
+        // foreach ($body as $key => $value) {
+        //   if ($value === FALSE) {
+        //     $body[$key] = 'false';
+        //   }
+        //
+        //   if ($value === TRUE) {
+        //     $body[$key] = 'true';
+        //   }
+        // }
 
-          if ($value === TRUE) {
-            $body[$key] = 'true';
-          }
-        }
+        $request = new Request($method, $path.$queryString, $headers, $body);
+        // if ($body) {
+        //     $this->handleRequestBody($request, $body);
+        // }
 
-        $request = $client->createRequest($method, $path.$queryString, $headers);
-        $request->setAuth($this->lob->getApiKey(), '');
-        if ($body) {
-            $this->handleRequestBody($request, $body);
-        }
+        print_r ($body);
 
         return $request;
     }
 
-    protected function handleRequestBody(
-        EntityEnclosingRequestInterface $request, array $data)
+    protected function handleRequestBody(EntityEnclosingRequestInterface $request, array $data)
     {
         $files = array_filter($data, function ($element) {
             return (is_string($element) && strpos($element, '@') === 0);

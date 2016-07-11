@@ -72,7 +72,7 @@ class AddressesTest extends \Lob\Tests\ResourceTest
     }
 
     public function testAll()
-    {
+
         $addresses = $this->resource->all();
 
         $this->assertTrue(is_array($addresses));
